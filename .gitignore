@@ -1,0 +1,9 @@
+# Netlify
+.netlify/
+
+# Cloudflare Wrangler
+.wrangler/
+
+# OS files
+.DS_Store
+Thumbs.db
