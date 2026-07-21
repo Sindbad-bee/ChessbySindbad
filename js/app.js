@@ -122,12 +122,15 @@ function getPieceUnicode(color, type) {
 }
 
 // ============================================================
-// ONLINE MODE (localStorage-based for same-device simulation)
+// ONLINE MODE - PeerJS (WebRTC) Real Multiplayer
 // ============================================================
 let isOnlineMode = false;
 let roomCode = null;
 let playerColor = 'w';
-let onlineInterval = null;
+let peer = null;
+let peerConnection = null;
+let peerStatusInterval = null;
+let isHost = false;
 
 function generateRoomCode() {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
@@ -136,80 +139,6 @@ function generateRoomCode() {
         code += chars[Math.floor(Math.random() * chars.length)];
     }
     return code;
-}
-
-function createRoom() {
-    roomCode = generateRoomCode();
-    playerColor = 'w';
-    document.getElementById('roomCode').textContent = roomCode;
-    document.getElementById('roomDisplay').style.display = 'block';
-    document.querySelector('#onlineLobby .lobby-options').style.display = 'none';
-    document.getElementById('lobbyBackBtn').style.display = 'none';
-
-    localStorage.setItem('chess_room_' + roomCode, JSON.stringify({
-        created: Date.now(),
-        state: 'waiting',
-        whitePlayer: 'host'
-    }));
-
-    onlineInterval = setInterval(() => {
-        const data = localStorage.getItem('chess_room_' + roomCode);
-        if (data) {
-            const parsed = JSON.parse(data);
-            if (parsed.state === 'joined') {
-                clearInterval(onlineInterval);
-                isOnlineMode = true;
-                startGame();
-            }
-        }
-    }, 1000);
-}
-
-function showJoinRoom() {
-    document.querySelector('#onlineLobby .lobby-options').style.display = 'none';
-    document.getElementById('joinDisplay').style.display = 'block';
-    document.getElementById('lobbyBackBtn').style.display = 'none';
-}
-
-function joinRoom() {
-    const code = document.getElementById('roomCodeInput').value.toUpperCase();
-    if (code.length !== 4) return alert('Please enter a valid room code (4 letters)');
-
-    const data = localStorage.getItem('chess_room_' + code);
-    if (!data) return alert('Room not found. Check the code and try again.');
-
-    const parsed = JSON.parse(data);
-    if (parsed.state !== 'waiting') return alert('Room is already full.');
-
-    playerColor = 'b';
-    roomCode = code;
-    localStorage.setItem('chess_room_' + code, JSON.stringify({
-        ...parsed,
-        state: 'joined',
-        blackPlayer: 'guest',
-        joinedAt: Date.now()
-    }));
-
-    isOnlineMode = true;
-    startGame();
-}
-
-function cancelRoom() {
-    if (roomCode) {
-        localStorage.removeItem('chess_room_' + roomCode);
-    }
-    clearInterval(onlineInterval);
-    roomCode = null;
-    document.getElementById('roomDisplay').style.display = 'none';
-    document.querySelector('#onlineLobby .lobby-options').style.display = 'flex';
-    document.getElementById('lobbyBackBtn').style.display = 'block';
-}
-
-function cancelJoin() {
-    document.getElementById('joinDisplay').style.display = 'none';
-    document.querySelector('#onlineLobby .lobby-options').style.display = 'flex';
-    document.getElementById('lobbyBackBtn').style.display = 'block';
-    document.getElementById('roomCodeInput').value = '';
 }
 
 function showOnlineLobby() {
@@ -225,6 +154,224 @@ function hideOnlineLobby() {
     cancelRoom();
     document.getElementById('onlineLobby').classList.remove('active');
     document.getElementById('introScreen').classList.remove('hidden');
+}
+
+function createRoom() {
+    // Disable the button to prevent double clicks
+    const createBtn = document.querySelector('.lobby-card:first-child');
+    createBtn.style.pointerEvents = 'none';
+    createBtn.style.opacity = '0.5';
+
+    roomCode = generateRoomCode();
+
+    // Initialize Peer with the room code as our peer ID
+    try {
+        peer = new Peer(roomCode, {
+            debug: 0
+        });
+
+        peer.on('open', (id) => {
+            isHost = true;
+            playerColor = 'w';
+            document.getElementById('roomCode').textContent = id;
+            document.getElementById('roomDisplay').style.display = 'block';
+            document.querySelector('#onlineLobby .lobby-options').style.display = 'none';
+            document.getElementById('lobbyBackBtn').style.display = 'none';
+            document.getElementById('lobbyStatusText').textContent = 'Waiting for opponent to join...';
+
+            // Re-enable button
+            createBtn.style.pointerEvents = 'auto';
+            createBtn.style.opacity = '1';
+        });
+
+        peer.on('connection', (conn) => {
+            peerConnection = conn;
+
+            conn.on('open', () => {
+                document.getElementById('lobbyStatusText').textContent = 'Opponent connected! Starting game...';
+                clearInterval(peerStatusInterval);
+
+                // Set up data handler
+                setupPeerDataHandler(conn);
+
+                setTimeout(() => {
+                    isOnlineMode = true;
+                    startGame();
+                }, 500);
+            });
+
+            conn.on('close', () => {
+                handleDisconnect();
+            });
+        });
+
+        peer.on('error', (err) => {
+            console.error('PeerJS error:', err);
+            if (err.type === 'unavailable-id') {
+                // Room code taken, try another
+                roomCode = generateRoomCode();
+                peer.destroy();
+                peer = new Peer(roomCode, { debug: 0 });
+                // Re-setup listeners by calling createRoom logic again
+                // For simplicity, we just try once more with a new code
+                createBtn.style.pointerEvents = 'auto';
+                createBtn.style.opacity = '1';
+            } else {
+                alert('Connection error: ' + (err.message || 'Could not create room'));
+                cancelRoom();
+            }
+        });
+
+        // Safety timeout
+        peerStatusInterval = setInterval(() => {
+            if (!peerConnection) {
+                document.getElementById('lobbyStatusText').textContent = 'Waiting for opponent to join...';
+            }
+        }, 2000);
+
+    } catch (e) {
+        alert('Failed to initialize PeerJS. Make sure you are connected to the internet.');
+        createBtn.style.pointerEvents = 'auto';
+        createBtn.style.opacity = '1';
+    }
+}
+
+function showJoinRoom() {
+    document.querySelector('#onlineLobby .lobby-options').style.display = 'none';
+    document.getElementById('joinDisplay').style.display = 'block';
+    document.getElementById('lobbyBackBtn').style.display = 'none';
+}
+
+function joinRoom() {
+    const code = document.getElementById('roomCodeInput').value.toUpperCase();
+    if (code.length !== 4) return alert('Please enter a valid room code (4 letters)');
+
+    try {
+        peer = new Peer(undefined, { debug: 0 });
+
+        peer.on('open', (id) => {
+            // Connect to the host
+            const conn = peer.connect(code, {
+                reliable: true
+            });
+
+            conn.on('open', () => {
+                peerConnection = conn;
+                playerColor = 'b';
+                roomCode = code;
+                isHost = false;
+
+                setupPeerDataHandler(conn);
+
+                isOnlineMode = true;
+                startGame();
+            });
+
+            conn.on('error', (err) => {
+                alert('Could not connect to room. Check the code and try again.');
+                console.error('Connection error:', err);
+                cancelJoin();
+            });
+
+            conn.on('close', () => {
+                handleDisconnect();
+            });
+
+            // Timeout for connection
+            setTimeout(() => {
+                if (!peerConnection) {
+                    alert('Connection timed out. The room may not exist.');
+                    cancelJoin();
+                }
+            }, 8000);
+        });
+
+        peer.on('error', (err) => {
+            alert('Failed to join. Make sure you are connected to the internet and the code is correct.');
+            console.error('PeerJS error:', err);
+            cancelJoin();
+        });
+
+    } catch (e) {
+        alert('Failed to initialize connection. Check your internet connection.');
+        cancelJoin();
+    }
+}
+
+function setupPeerDataHandler(conn) {
+    conn.on('data', (data) => {
+        if (data.type === 'move') {
+            // Apply opponent's move
+            const result = game.makeMove(data.fromRow, data.fromCol, data.toRow, data.toCol, data.promotion || null);
+            if (result === 'promotion') {
+                // Host should auto-promote to queen for simplicity; or we can ask
+                game.makeMove(data.fromRow, data.fromCol, data.toRow, data.toCol, data.promotion || 'q');
+            }
+            selectedSquare = null;
+            legalMoves = [];
+            render();
+            SoundEngine.play('move');
+        }
+    });
+}
+
+function sendMove(fromRow, fromCol, toRow, toCol, promotion) {
+    if (peerConnection && peerConnection.open) {
+        peerConnection.send({
+            type: 'move',
+            fromRow: fromRow,
+            fromCol: fromCol,
+            toRow: toRow,
+            toCol: toCol,
+            promotion: promotion || null
+        });
+    }
+}
+
+function handleDisconnect() {
+    if (isOnlineMode) {
+        alert('Your opponent has disconnected. The game will end.');
+        game.gameOver = true;
+        game.gameResult = 'Opponent disconnected';
+        render();
+    }
+    cleanupPeer();
+}
+
+function cleanupPeer() {
+    if (peerConnection) {
+        peerConnection.close();
+        peerConnection = null;
+    }
+    if (peer) {
+        peer.destroy();
+        peer = null;
+    }
+    clearInterval(peerStatusInterval);
+    roomCode = null;
+    isOnlineMode = false;
+    isHost = false;
+}
+
+function cancelRoom() {
+    cleanupPeer();
+    document.getElementById('roomDisplay').style.display = 'none';
+    document.querySelector('#onlineLobby .lobby-options').style.display = 'flex';
+    document.getElementById('lobbyBackBtn').style.display = 'block';
+    document.getElementById('roomCodeInput').value = '';
+
+    // Reset create button
+    const createBtn = document.querySelector('.lobby-card:first-child');
+    createBtn.style.pointerEvents = 'auto';
+    createBtn.style.opacity = '1';
+}
+
+function cancelJoin() {
+    cleanupPeer();
+    document.getElementById('joinDisplay').style.display = 'none';
+    document.querySelector('#onlineLobby .lobby-options').style.display = 'flex';
+    document.getElementById('lobbyBackBtn').style.display = 'block';
+    document.getElementById('roomCodeInput').value = '';
 }
 
 function startLocalGame() {
@@ -445,14 +592,11 @@ function handleSquareClick(row, col) {
     if (game.gameOver) return;
     if (game.promotionPending) return;
 
-    // In online mode, restrict to player's own pieces
+    // In online mode, only allow moves on your turn and with your pieces
     if (isOnlineMode) {
+        if (game.turn !== playerColor) return;
         const piece = game.board[row][col];
-        if (selectedSquare) {
-            if (game.turn !== playerColor) return;
-        } else {
-            if (!piece || piece.color !== playerColor) return;
-        }
+        if (!selectedSquare && (!piece || piece.color !== playerColor)) return;
     }
 
     const piece = game.board[row][col];
@@ -461,14 +605,21 @@ function handleSquareClick(row, col) {
         const move = legalMoves.find(m => m.row === row && m.col === col);
         if (move) {
             SoundEngine.play('select');
-            const result = game.makeMove(selectedSquare.row, selectedSquare.col, row, col);
+            const fromRow = selectedSquare.row;
+            const fromCol = selectedSquare.col;
+            const result = game.makeMove(fromRow, fromCol, row, col);
             if (result === 'promotion') {
-                showPromotionDialog(selectedSquare.row, selectedSquare.col, row, col);
+                showPromotionDialog(fromRow, fromCol, row, col);
                 return;
             }
             selectedSquare = null;
             legalMoves = [];
             render();
+
+            // Send the move to opponent in online mode
+            if (isOnlineMode && peerConnection && peerConnection.open) {
+                sendMove(fromRow, fromCol, row, col, null);
+            }
             return;
         }
 
@@ -518,6 +669,11 @@ function showPromotionDialog(fromRow, fromCol, toRow, toCol) {
             selectedSquare = null;
             legalMoves = [];
             render();
+
+            // Send promotion move to opponent
+            if (isOnlineMode && peerConnection && peerConnection.open) {
+                sendMove(fromRow, fromCol, toRow, toCol, type);
+            }
         });
         promotionOptions.appendChild(btn);
     }

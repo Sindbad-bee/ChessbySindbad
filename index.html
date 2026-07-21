@@ -50,17 +50,17 @@
                 </div>
             </div>
 
-            <div id="roomDisplay" style="display:none;">
-                <div class="room-code-display">
-                    <div class="room-code-label">Room Code</div>
-                    <div class="room-code" id="roomCode">ABCD</div>
-                    <div class="room-status">
-                        <span class="spinner"></span>
-                        Waiting for opponent to join...
+                <div id="roomDisplay" style="display:none;">
+                    <div class="room-code-display">
+                        <div class="room-code-label">Room Code</div>
+                        <div class="room-code" id="roomCode">ABCD</div>
+                        <div class="room-status">
+                            <span class="spinner"></span>
+                            <span id="lobbyStatusText">Waiting for opponent to join...</span>
+                        </div>
                     </div>
+                    <button class="lobby-back" onclick="cancelRoom()" style="margin-top:15px;">← Cancel</button>
                 </div>
-                <button class="lobby-back" onclick="cancelRoom()" style="margin-top:15px;">← Cancel</button>
-            </div>
 
             <div id="joinDisplay" style="display:none;">
                 <div style="margin-top:20px;">
@@ -170,6 +170,8 @@
     </div>
 
     <!-- ===== SCRIPTS ===== -->
+    <!-- PeerJS for WebRTC online multiplayer -->
+    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
     <!-- Load order: Engine first, then App -->
     <script src="js/chess-engine.js"></script>
     <script src="js/app.js"></script>
