@@ -131,6 +131,7 @@ let peer = null;
 let peerConnection = null;
 let peerStatusInterval = null;
 let isHost = false;
+let peerInitialized = false;
 
 function generateRoomCode() {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
@@ -157,20 +158,28 @@ function hideOnlineLobby() {
 }
 
 function createRoom() {
-    // Disable the button to prevent double clicks
+    if (peerInitialized) return;
+    peerInitialized = true;
+
     const createBtn = document.querySelector('.lobby-card:first-child');
     createBtn.style.pointerEvents = 'none';
     createBtn.style.opacity = '0.5';
 
     roomCode = generateRoomCode();
 
-    // Initialize Peer with the room code as our peer ID
     try {
+        // Use PeerJS with the default cloud server (0.peerjs.com)
         peer = new Peer(roomCode, {
-            debug: 0
+            debug: 0,
+            config: {
+                'iceServers': [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' }
+                ]
+            }
         });
 
-        peer.on('open', (id) => {
+        peer.on('open', function(id) {
             isHost = true;
             playerColor = 'w';
             document.getElementById('roomCode').textContent = id;
@@ -178,61 +187,65 @@ function createRoom() {
             document.querySelector('#onlineLobby .lobby-options').style.display = 'none';
             document.getElementById('lobbyBackBtn').style.display = 'none';
             document.getElementById('lobbyStatusText').textContent = 'Waiting for opponent to join...';
-
-            // Re-enable button
             createBtn.style.pointerEvents = 'auto';
             createBtn.style.opacity = '1';
         });
 
-        peer.on('connection', (conn) => {
+        peer.on('connection', function(conn) {
             peerConnection = conn;
 
-            conn.on('open', () => {
+            conn.on('open', function() {
                 document.getElementById('lobbyStatusText').textContent = 'Opponent connected! Starting game...';
                 clearInterval(peerStatusInterval);
-
-                // Set up data handler
                 setupPeerDataHandler(conn);
-
-                setTimeout(() => {
+                setTimeout(function() {
                     isOnlineMode = true;
                     startGame();
                 }, 500);
             });
 
-            conn.on('close', () => {
+            conn.on('data', function(data) {
+                handlePeerData(data);
+            });
+
+            conn.on('close', function() {
                 handleDisconnect();
+            });
+
+            conn.on('error', function(err) {
+                console.error('Connection error:', err);
             });
         });
 
-        peer.on('error', (err) => {
+        peer.on('error', function(err) {
             console.error('PeerJS error:', err);
             if (err.type === 'unavailable-id') {
-                // Room code taken, try another
+                // Room code taken, try a new one
                 roomCode = generateRoomCode();
                 peer.destroy();
-                peer = new Peer(roomCode, { debug: 0 });
-                // Re-setup listeners by calling createRoom logic again
-                // For simplicity, we just try once more with a new code
+                peer = null;
+                peerInitialized = false;
                 createBtn.style.pointerEvents = 'auto';
                 createBtn.style.opacity = '1';
+                // Auto retry with new code
+                createRoom();
             } else {
-                alert('Connection error: ' + (err.message || 'Could not create room'));
+                alert('Connection error: ' + (err.message || 'Could not create room. Check your internet connection.'));
                 cancelRoom();
             }
         });
 
-        // Safety timeout
-        peerStatusInterval = setInterval(() => {
+        peerStatusInterval = setInterval(function() {
             if (!peerConnection) {
                 document.getElementById('lobbyStatusText').textContent = 'Waiting for opponent to join...';
             }
         }, 2000);
 
     } catch (e) {
-        alert('Failed to initialize PeerJS. Make sure you are connected to the internet.');
+        alert('Failed to initialize. Make sure you are connected to the internet.');
         createBtn.style.pointerEvents = 'auto';
         createBtn.style.opacity = '1';
+        peerInitialized = false;
     }
 }
 
@@ -243,50 +256,67 @@ function showJoinRoom() {
 }
 
 function joinRoom() {
+    if (peerInitialized) return;
+    peerInitialized = true;
+
     const code = document.getElementById('roomCodeInput').value.toUpperCase();
-    if (code.length !== 4) return alert('Please enter a valid room code (4 letters)');
+    if (code.length !== 4) {
+        peerInitialized = false;
+        return alert('Please enter a valid room code (4 letters)');
+    }
 
     try {
-        peer = new Peer(undefined, { debug: 0 });
+        peer = new Peer(undefined, {
+            debug: 0,
+            config: {
+                'iceServers': [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' }
+                ]
+            }
+        });
 
-        peer.on('open', (id) => {
-            // Connect to the host
-            const conn = peer.connect(code, {
-                reliable: true
-            });
+        peer.on('open', function(id) {
+            const conn = peer.connect(code, { reliable: true });
 
-            conn.on('open', () => {
+            conn.on('open', function() {
                 peerConnection = conn;
                 playerColor = 'b';
                 roomCode = code;
                 isHost = false;
 
-                setupPeerDataHandler(conn);
+                conn.on('data', function(data) {
+                    handlePeerData(data);
+                });
+
+                conn.on('close', function() {
+                    handleDisconnect();
+                });
+
+                conn.on('error', function(err) {
+                    console.error('Connection error:', err);
+                });
 
                 isOnlineMode = true;
                 startGame();
             });
 
-            conn.on('error', (err) => {
+            conn.on('error', function(err) {
                 alert('Could not connect to room. Check the code and try again.');
                 console.error('Connection error:', err);
                 cancelJoin();
             });
 
-            conn.on('close', () => {
-                handleDisconnect();
-            });
-
-            // Timeout for connection
-            setTimeout(() => {
+            // Timeout
+            setTimeout(function() {
                 if (!peerConnection) {
-                    alert('Connection timed out. The room may not exist.');
+                    alert('Connection timed out. The room may not exist or the host is unreachable.');
                     cancelJoin();
                 }
-            }, 8000);
+            }, 10000);
         });
 
-        peer.on('error', (err) => {
+        peer.on('error', function(err) {
             alert('Failed to join. Make sure you are connected to the internet and the code is correct.');
             console.error('PeerJS error:', err);
             cancelJoin();
@@ -298,21 +328,21 @@ function joinRoom() {
     }
 }
 
-function setupPeerDataHandler(conn) {
-    conn.on('data', (data) => {
-        if (data.type === 'move') {
-            // Apply opponent's move
-            const result = game.makeMove(data.fromRow, data.fromCol, data.toRow, data.toCol, data.promotion || null);
-            if (result === 'promotion') {
-                // Host should auto-promote to queen for simplicity; or we can ask
-                game.makeMove(data.fromRow, data.fromCol, data.toRow, data.toCol, data.promotion || 'q');
-            }
-            selectedSquare = null;
-            legalMoves = [];
-            render();
-            SoundEngine.play('move');
+function handlePeerData(data) {
+    if (data.type === 'move') {
+        const result = game.makeMove(data.fromRow, data.fromCol, data.toRow, data.toCol, data.promotion || null);
+        if (result === 'promotion') {
+            game.makeMove(data.fromRow, data.fromCol, data.toRow, data.toCol, data.promotion || 'q');
         }
-    });
+        selectedSquare = null;
+        legalMoves = [];
+        render();
+        SoundEngine.play('move');
+    }
+}
+
+function setupPeerDataHandler(conn) {
+    // Data handler is now set up directly in the connection events
 }
 
 function sendMove(fromRow, fromCol, toRow, toCol, promotion) {
@@ -340,17 +370,18 @@ function handleDisconnect() {
 
 function cleanupPeer() {
     if (peerConnection) {
-        peerConnection.close();
+        try { peerConnection.close(); } catch(e) {}
         peerConnection = null;
     }
     if (peer) {
-        peer.destroy();
+        try { peer.destroy(); } catch(e) {}
         peer = null;
     }
     clearInterval(peerStatusInterval);
     roomCode = null;
     isOnlineMode = false;
     isHost = false;
+    peerInitialized = false;
 }
 
 function cancelRoom() {
@@ -360,7 +391,6 @@ function cancelRoom() {
     document.getElementById('lobbyBackBtn').style.display = 'block';
     document.getElementById('roomCodeInput').value = '';
 
-    // Reset create button
     const createBtn = document.querySelector('.lobby-card:first-child');
     createBtn.style.pointerEvents = 'auto';
     createBtn.style.opacity = '1';
